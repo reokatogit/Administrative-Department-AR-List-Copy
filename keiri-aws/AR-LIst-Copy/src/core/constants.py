@@ -1,0 +1,8 @@
+APP_TITLE = "開示用未収リスト更新ツール"
+
+MASTER_SHEET_NAME = "ALL"
+HEADER_ROW = 3
+DATA_START_ROW = 4
+
+DEFAULT_OUTPUT_PREFIX = "【開示用未収リストALL(売却予定リスト除外済)】"
+DEFAULT_OUTPUT_EXTENSION = ".xlsx"
