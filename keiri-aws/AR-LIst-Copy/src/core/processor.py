@@ -4,22 +4,27 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
-from zipfile import ZIP_STORED, ZipFile
 
 from openpyxl.utils import get_column_letter
-from openpyxl.writer.excel import ExcelWriter
 
 from core.constants import DATA_START_ROW, HEADER_ROW
 from core.mapping import ConditionalCopyRule, CopyRule, DEFAULT_MAPPING, MappingConfig
 from core.validator import validate_inputs
 from utils.excel_helpers import (
+    build_row_index_by_key,
     col_to_index,
     copy_row_style_and_formulas,
     find_last_data_row,
+    get_cell_value,
     is_blank,
     iter_non_blank_rows,
     next_sequential_number,
+    normalize_key,
 )
+
+
+MONTHLY_KEY_COL = "A"
+MASTER_KEY_COL = "E"
 
 
 class ProcessingError(Exception):
@@ -30,6 +35,7 @@ class ProcessingError(Exception):
 class ProcessingResult:
     output_path: Path
     source_row_count: int
+    updated_row_count: int
     appended_row_count: int
 
 
@@ -60,29 +66,37 @@ class WorkbookProcessor:
         total_rows = len(source_rows)
         self._report_progress(progress_callback, 0, "処理を開始しています…")
 
+        key_to_row = build_row_index_by_key(target_ws, MASTER_KEY_COL, DATA_START_ROW)
         append_row = find_last_data_row(target_ws, DATA_START_ROW) + 1
+
+        updated_count = 0
         appended_count = 0
         progress_step = max(1, total_rows // 100)
 
-        for source_row in source_rows:
-            template_row = append_row - 1 if append_row > DATA_START_ROW else DATA_START_ROW
-            copy_row_style_and_formulas(target_ws, template_row, append_row)
+        for i, source_row in enumerate(source_rows, start=1):
+            source_key = normalize_key(get_cell_value(source_ws, source_row, MONTHLY_KEY_COL))
 
-            self._apply_copy_rules(source_ws, target_ws, source_row, append_row)
-            self._apply_conditional_copy_rules(source_ws, target_ws, source_row, append_row)
-            self._apply_value_map_copy_rules(source_ws, target_ws, source_row, append_row)
-            self._apply_auto_number_rules(target_ws, append_row)
-            self._apply_fixed_value_rules(target_ws, append_row)
+            if source_key and source_key in key_to_row:
+                target_row = key_to_row[source_key]
+                self._update_existing_row(source_ws, target_ws, source_row, target_row)
+                updated_count += 1
+            else:
+                target_row = append_row
+                self._append_new_row(source_ws, target_ws, source_row, target_row)
+                appended_count += 1
+                append_row += 1
 
-            append_row += 1
-            appended_count += 1
+                # 新規追加したら index にも反映
+                appended_key = normalize_key(get_cell_value(target_ws, target_row, MASTER_KEY_COL))
+                if appended_key:
+                    key_to_row[appended_key] = target_row
 
-            if appended_count % progress_step == 0 or appended_count == total_rows:
-                percent = int((appended_count / total_rows) * 90)
+            if i % progress_step == 0 or i == total_rows:
+                percent = int((i / total_rows) * 90)
                 self._report_progress(
                     progress_callback,
                     percent,
-                    f"データ追加中… {appended_count}/{total_rows}",
+                    f"処理中… {i}/{total_rows}（更新 {updated_count} 件 / 追加 {appended_count} 件）",
                 )
 
         self._report_progress(progress_callback, 93, "フィルタを更新しています…")
@@ -93,7 +107,7 @@ class WorkbookProcessor:
         self._report_progress(progress_callback, 95, "数式参照を調整しています…")
         self._sanitize_formula_references(validated.master_workbook)
 
-        self._report_progress(progress_callback, 97, "保存しています…（大きいファイルのため少し時間がかかることがあります）")
+        self._report_progress(progress_callback, 97, "保存しています…")
         self._save_output_workbook(validated.master_workbook, output_path)
 
         self._report_progress(progress_callback, 100, "完了しました。")
@@ -101,8 +115,40 @@ class WorkbookProcessor:
         return ProcessingResult(
             output_path=output_path,
             source_row_count=total_rows,
+            updated_row_count=updated_count,
             appended_row_count=appended_count,
         )
+
+    def _update_existing_row(self, source_ws, target_ws, source_row: int, target_row: int) -> None:
+        """
+        既存行更新:
+        - 転記対象列を更新
+        - 派生列を更新
+        - 固定値を反映
+        - 採番、書式コピー、数式コピーはしない
+        """
+        self._apply_copy_rules(source_ws, target_ws, source_row, target_row)
+        self._apply_conditional_copy_rules(source_ws, target_ws, source_row, target_row)
+        self._apply_value_map_copy_rules(source_ws, target_ws, source_row, target_row)
+        self._apply_fixed_value_rules(target_ws, target_row)
+
+    def _append_new_row(self, source_ws, target_ws, source_row: int, target_row: int) -> None:
+        """
+        新規追加:
+        - 前行から書式/数式コピー
+        - 転記
+        - 派生列
+        - 採番
+        - 固定値
+        """
+        template_row = target_row - 1 if target_row > DATA_START_ROW else DATA_START_ROW
+        copy_row_style_and_formulas(target_ws, template_row, target_row)
+
+        self._apply_copy_rules(source_ws, target_ws, source_row, target_row)
+        self._apply_conditional_copy_rules(source_ws, target_ws, source_row, target_row)
+        self._apply_value_map_copy_rules(source_ws, target_ws, source_row, target_row)
+        self._apply_auto_number_rules(target_ws, target_row)
+        self._apply_fixed_value_rules(target_ws, target_row)
 
     def _apply_copy_rules(self, source_ws, target_ws, source_row: int, target_row: int) -> None:
         for rule in self.mapping.always_copy_rules:
@@ -189,28 +235,9 @@ class WorkbookProcessor:
 
     @staticmethod
     def _save_output_workbook(workbook, output_path: Path) -> None:
-        temp_path = output_path.with_name(f"~{output_path.stem}_tmp.xlsx")
-
         try:
-            if temp_path.exists():
-                temp_path.unlink()
-
-            with ZipFile(temp_path, mode="w", compression=ZIP_STORED, allowZip64=True) as archive:
-                writer = ExcelWriter(workbook, archive)
-                writer.save()
-
-            if output_path.exists():
-                output_path.unlink()
-
-            temp_path.replace(output_path)
-
+            workbook.save(output_path)
         except Exception as exc:  # noqa: BLE001
-            try:
-                if temp_path.exists():
-                    temp_path.unlink()
-            except OSError:
-                pass
-
             raise ProcessingError(f"出力ファイルの保存に失敗しました。\n{output_path}\n{exc}") from exc
 
     @staticmethod

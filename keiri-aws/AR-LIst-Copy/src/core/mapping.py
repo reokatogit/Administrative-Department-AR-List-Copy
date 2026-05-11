@@ -95,23 +95,15 @@ class MappingConfig:
         return columns
 
 
-# 値が入らなかったときだけ "-" を入れる列
+# 値が空欄のときだけ "-" を補完する列
+# 更新型にしても、既存値があれば上書きしない運用
 HYPHEN_IF_BLANK_TARGETS = (
-    "Y",
     "Z",
     "AA",
     "AB",
     "AC",
-    "AD",
-    "AE",
-    "AF",
-    "AG",
-    "AH",
-    "AI",
-    "AJ",
     "AK",
     "AT",
-    "AZ",
     "BA",
     "BB",
     "BI",
@@ -122,7 +114,7 @@ HYPHEN_IF_BLANK_TARGETS = (
     "BR",
 )
 
-# 本当に空白のままでよい列
+# 本当に空欄のままでよい列
 BLANK_IF_BLANK_TARGETS = (
     "AO",
     "BS",
@@ -145,7 +137,7 @@ DEFAULT_MAPPING = MappingConfig(
         CopyRule(source_col="M", target_col="S"),   # 最後の未収
         CopyRule(source_col="G", target_col="AR"),  # 先月契約有無 -> 先月ステータス
 
-        # 常時転記に寄せた列
+        # 企業Noベース更新で、常時反映したい列
         CopyRule(source_col="A",  target_col="E"),   # 企業No
         CopyRule(source_col="B",  target_col="F"),   # 企業名
         CopyRule(source_col="N",  target_col="T"),   # 主商材
@@ -164,7 +156,7 @@ DEFAULT_MAPPING = MappingConfig(
         CopyRule(source_col="AC", target_col="BQ"),  # LP有効
         CopyRule(source_col="AA", target_col="BR"),  # LINE有効
 
-        # 追加で常時転記にしている列
+        # その他、常時反映したい列
         CopyRule(source_col="U",  target_col="D"),   # 対応方針
         CopyRule(source_col="P",  target_col="V"),   # 債権会社
         CopyRule(source_col="Q",  target_col="W"),   # パートナーコード
@@ -173,7 +165,7 @@ DEFAULT_MAPPING = MappingConfig(
         CopyRule(source_col="AF", target_col="BW"),  # 除外理由
     ),
     conditional_copy_rules=(
-        # いったん空にしている
+        # 更新型にしたので、現時点では未使用
     ),
     auto_number_rules=(
         AutoNumberRule(target_col="B"),
@@ -185,7 +177,7 @@ DEFAULT_MAPPING = MappingConfig(
         # 値が入らなかったときだけ "-" を補完
         *(FixedValueRule(target_col=col, value="-", only_if_blank=True) for col in HYPHEN_IF_BLANK_TARGETS),
 
-        # 値が入らなかったときだけ空白のまま維持
+        # 値が入らなかったときだけ空欄維持
         *(FixedValueRule(target_col=col, value=None, only_if_blank=True) for col in BLANK_IF_BLANK_TARGETS),
     ),
     value_map_copy_rules=(

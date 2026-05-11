@@ -216,13 +216,16 @@ class MainWindow(tk.Tk):
         self.last_output_path = result.output_path
         self.open_output_button.config(state="normal")
         self.progress["value"] = 100
-        self.status_var.set(f"完了: {result.output_path.name}")
+        self.status_var.set(
+            f"完了: 更新 {result.updated_row_count} 件 / 追加 {result.appended_row_count} 件"
+        )
 
         show_info(
             self,
             (
                 "処理が完了しました。\n\n"
                 f"読み込み件数: {result.source_row_count}\n"
+                f"更新件数: {result.updated_row_count}\n"
                 f"追加件数: {result.appended_row_count}\n"
                 f"出力先: {result.output_path}"
             ),

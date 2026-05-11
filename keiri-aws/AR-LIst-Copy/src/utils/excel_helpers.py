@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import copy
+from typing import Any
 
 from openpyxl.formula.translate import Translator
 from openpyxl.utils import column_index_from_string
@@ -10,12 +11,34 @@ def col_to_index(col: str) -> int:
     return column_index_from_string(col)
 
 
-def is_blank(value) -> bool:
+def is_blank(value: Any) -> bool:
     if value is None:
         return True
     if isinstance(value, str) and value.strip() == "":
         return True
     return False
+
+
+def normalize_key(value: Any) -> str | None:
+    """
+    照合キー用の正規化。
+    企業No は文字列比較前提で、前後空白だけ落とす。
+    """
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if text == "":
+        return None
+    return text
+
+
+def get_cell_value(ws, row: int, col: str):
+    return ws.cell(row=row, column=col_to_index(col)).value
+
+
+def set_cell_value(ws, row: int, col: str, value) -> None:
+    ws.cell(row=row, column=col_to_index(col)).value = value
 
 
 def _row_has_value(ws, row: int) -> bool:
@@ -36,6 +59,24 @@ def find_last_data_row(ws, start_row: int) -> int:
         if _row_has_value(ws, row):
             return row
     return start_row - 1
+
+
+def build_row_index_by_key(ws, key_col: str, start_row: int) -> dict[str, int]:
+    """
+    指定列をキーにして、キー -> 行番号 の辞書を作る。
+    同じキーが複数ある場合は、後ろの行を優先する。
+    """
+    index: dict[str, int] = {}
+    key_col_idx = col_to_index(key_col)
+
+    for row in range(start_row, ws.max_row + 1):
+        raw_value = ws.cell(row=row, column=key_col_idx).value
+        key = normalize_key(raw_value)
+        if key is None:
+            continue
+        index[key] = row
+
+    return index
 
 
 def next_sequential_number(ws, target_col: str, current_append_row: int, start_number: int = 1) -> int:
@@ -59,6 +100,10 @@ def next_sequential_number(ws, target_col: str, current_append_row: int, start_n
 
 
 def copy_row_style_and_formulas(ws, source_row: int, target_row: int) -> None:
+    """
+    既存行の書式と数式を新規行へコピーする。
+    値セルは None にして、あとから processor 側で埋める。
+    """
     if source_row <= 0 or target_row <= 0:
         return
 
