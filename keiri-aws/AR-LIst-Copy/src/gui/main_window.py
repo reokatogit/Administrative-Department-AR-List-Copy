@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 from datetime import date
 import os
 import queue
@@ -29,7 +30,11 @@ class MainWindow(tk.Tk):
         self.master_path_var = tk.StringVar()
         self.output_dir_var = tk.StringVar()
         self.output_file_var = tk.StringVar(value=build_output_filename())
-        self.extract_date_var = tk.StringVar()
+        today = date.today()
+        self.extract_date_var = tk.StringVar(value=f"{today.year}/{today.month}/{today.day}")
+        self.extract_year_var = tk.StringVar(value=str(today.year))
+        self.extract_month_var = tk.StringVar(value=str(today.month))
+        self.extract_day_var = tk.StringVar(value=str(today.day))
         self.status_var = tk.StringVar(value="ファイルを選択してください。")
 
         self.last_output_path: Path | None = None
@@ -69,9 +74,48 @@ class MainWindow(tk.Tk):
         self.output_file_entry.grid(row=3, column=1, sticky="ew", **padding)
 
         ttk.Label(container, text="抽出日").grid(row=4, column=0, sticky="w", **padding)
-        self.extract_date_entry = ttk.Entry(container, textvariable=self.extract_date_var, width=20)
-        self.extract_date_entry.grid(row=4, column=1, sticky="w", **padding)
-        ttk.Label(container, text="例：2026/3/12").grid(row=4, column=1, sticky="w", padx=(180, 10), pady=7)
+        extract_date_frame = ttk.Frame(container)
+        extract_date_frame.grid(row=4, column=1, sticky="w", **padding)
+
+        years = [str(y) for y in range(2000, 2101)]
+        months = [str(m) for m in range(1, 13)]
+
+        self.extract_year_combo = ttk.Combobox(
+            extract_date_frame,
+            textvariable=self.extract_year_var,
+            values=years,
+            width=7,
+            state="readonly",
+        )
+        self.extract_year_combo.pack(side="left")
+        ttk.Label(extract_date_frame, text="年").pack(side="left", padx=(4, 10))
+
+        self.extract_month_combo = ttk.Combobox(
+            extract_date_frame,
+            textvariable=self.extract_month_var,
+            values=months,
+            width=4,
+            state="readonly",
+        )
+        self.extract_month_combo.pack(side="left")
+        ttk.Label(extract_date_frame, text="月").pack(side="left", padx=(4, 10))
+
+        self.extract_day_combo = ttk.Combobox(
+            extract_date_frame,
+            textvariable=self.extract_day_var,
+            values=[],
+            width=4,
+            state="readonly",
+        )
+        self.extract_day_combo.pack(side="left")
+        ttk.Label(extract_date_frame, text="日").pack(side="left", padx=(4, 10))
+
+        self.extract_year_combo.bind("<<ComboboxSelected>>", self._on_extract_date_part_changed)
+        self.extract_month_combo.bind("<<ComboboxSelected>>", self._on_extract_date_part_changed)
+        self.extract_day_combo.bind("<<ComboboxSelected>>", self._on_extract_date_part_changed)
+
+        self._refresh_day_options()
+        self._sync_extract_date_from_selector()
 
         ttk.Separator(container, orient="horizontal").grid(row=5, column=0, columnspan=3, sticky="ew", pady=10)
 
@@ -133,6 +177,26 @@ class MainWindow(tk.Tk):
         path = filedialog.askdirectory(title="出力先フォルダを選択")
         if path:
             self.output_dir_var.set(path)
+
+    def _refresh_day_options(self) -> None:
+        year = int(self.extract_year_var.get())
+        month = int(self.extract_month_var.get())
+        last_day = calendar.monthrange(year, month)[1]
+        day_values = [str(d) for d in range(1, last_day + 1)]
+        self.extract_day_combo.config(values=day_values)
+
+        current_day = self.extract_day_var.get()
+        if current_day not in day_values:
+            self.extract_day_var.set(day_values[-1])
+
+    def _sync_extract_date_from_selector(self) -> None:
+        self.extract_date_var.set(
+            f"{self.extract_year_var.get()}/{self.extract_month_var.get()}/{self.extract_day_var.get()}"
+        )
+
+    def _on_extract_date_part_changed(self, _event=None) -> None:
+        self._refresh_day_options()
+        self._sync_extract_date_from_selector()
 
     def _run(self) -> None:
         if self._is_processing:
@@ -278,7 +342,9 @@ class MainWindow(tk.Tk):
         self.master_entry.config(state=widget_state)
         self.output_dir_entry.config(state=widget_state)
         self.output_file_entry.config(state=widget_state)
-        self.extract_date_entry.config(state=widget_state)
+        self.extract_year_combo.config(state="readonly" if not is_processing else "disabled")
+        self.extract_month_combo.config(state="readonly" if not is_processing else "disabled")
+        self.extract_day_combo.config(state="readonly" if not is_processing else "disabled")
 
         if is_processing:
             self.open_output_button.config(state="disabled")
