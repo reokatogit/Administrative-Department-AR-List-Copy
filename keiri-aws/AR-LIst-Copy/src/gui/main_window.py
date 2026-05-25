@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import date
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -20,13 +22,14 @@ class MainWindow(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("780x340")
+        self.geometry("780x390")
         self.resizable(False, False)
 
         self.monthly_path_var = tk.StringVar()
         self.master_path_var = tk.StringVar()
         self.output_dir_var = tk.StringVar()
         self.output_file_var = tk.StringVar(value=build_output_filename())
+        self.extract_date_var = tk.StringVar()
         self.status_var = tk.StringVar(value="ファイルを選択してください。")
 
         self.last_output_path: Path | None = None
@@ -38,7 +41,7 @@ class MainWindow(tk.Tk):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        padding = {"padx": 10, "pady": 8}
+        padding = {"padx": 10, "pady": 7}
 
         container = ttk.Frame(self)
         container.pack(fill="both", expand=True, padx=12, pady=12)
@@ -65,10 +68,15 @@ class MainWindow(tk.Tk):
         self.output_file_entry = ttk.Entry(container, textvariable=self.output_file_var, width=70)
         self.output_file_entry.grid(row=3, column=1, sticky="ew", **padding)
 
-        ttk.Separator(container, orient="horizontal").grid(row=4, column=0, columnspan=3, sticky="ew", pady=12)
+        ttk.Label(container, text="抽出日").grid(row=4, column=0, sticky="w", **padding)
+        self.extract_date_entry = ttk.Entry(container, textvariable=self.extract_date_var, width=20)
+        self.extract_date_entry.grid(row=4, column=1, sticky="w", **padding)
+        ttk.Label(container, text="例：2026/3/12").grid(row=4, column=1, sticky="w", padx=(180, 10), pady=7)
+
+        ttk.Separator(container, orient="horizontal").grid(row=5, column=0, columnspan=3, sticky="ew", pady=10)
 
         button_frame = ttk.Frame(container)
-        button_frame.grid(row=5, column=0, columnspan=3, sticky="w", padx=10, pady=8)
+        button_frame.grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=8)
 
         self.run_button = ttk.Button(button_frame, text="実行", command=self._run)
         self.run_button.pack(side="left")
@@ -87,7 +95,7 @@ class MainWindow(tk.Tk):
             length=240,
             maximum=100,
         )
-        self.progress.grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 4))
+        self.progress.grid(row=7, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 4))
         self.progress["value"] = 0
 
         self.status_label = ttk.Label(
@@ -97,7 +105,7 @@ class MainWindow(tk.Tk):
             width=80,
             anchor="w",
         )
-        self.status_label.grid(row=7, column=0, columnspan=3, sticky="w", padx=10, pady=8)
+        self.status_label.grid(row=8, column=0, columnspan=3, sticky="w", padx=10, pady=8)
 
         container.columnconfigure(1, weight=1)
 
@@ -135,9 +143,12 @@ class MainWindow(tk.Tk):
             master_path = self.master_path_var.get().strip()
             output_dir = self.output_dir_var.get().strip()
             output_file = self.output_file_var.get().strip() or build_output_filename()
+            extract_date = self.extract_date_var.get().strip()
 
             if not monthly_path or not master_path or not output_dir:
                 raise ValidationError("月次ファイル、マスターファイル、出力先フォルダをすべて指定してください。")
+
+            self._validate_extract_date(extract_date)
 
             output_path = build_output_path(output_dir, output_file)
             output_path = self._resolve_output_path(output_path)
@@ -152,7 +163,7 @@ class MainWindow(tk.Tk):
 
             worker = threading.Thread(
                 target=self._worker_process,
-                args=(monthly_path, master_path, output_path),
+                args=(monthly_path, master_path, output_path, extract_date),
                 daemon=True,
             )
             worker.start()
@@ -169,12 +180,28 @@ class MainWindow(tk.Tk):
             self.status_var.set("想定外のエラーが発生しました。")
             show_error(self, f"想定外のエラーが発生しました。\n{exc}")
 
-    def _worker_process(self, monthly_path: str, master_path: str, output_path: Path) -> None:
+    @staticmethod
+    def _validate_extract_date(value: str) -> None:
+        if not value:
+            raise ValidationError("抽出日を入力してください。例：2026/3/12")
+
+        if not re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}", value):
+            raise ValidationError("抽出日は yyyy/m/d 形式で入力してください。例：2026/3/12")
+
+        year, month, day = map(int, value.split("/"))
+        try:
+            # 2026/2/31 のような実在しない日付を排除する
+            date(year, month, day)
+        except ValueError:
+            raise ValidationError("抽出日の日付形式が正しくありません。例：2026/3/12")
+
+    def _worker_process(self, monthly_path: str, master_path: str, output_path: Path, extract_date: str) -> None:
         try:
             result = self.processor.process(
                 monthly_path=monthly_path,
                 master_path=master_path,
                 output_path=output_path,
+                extract_date=extract_date,
                 progress_callback=lambda percent, message: self._worker_queue.put(
                     ("progress", (percent, message))
                 ),
@@ -251,6 +278,7 @@ class MainWindow(tk.Tk):
         self.master_entry.config(state=widget_state)
         self.output_dir_entry.config(state=widget_state)
         self.output_file_entry.config(state=widget_state)
+        self.extract_date_entry.config(state=widget_state)
 
         if is_processing:
             self.open_output_button.config(state="disabled")

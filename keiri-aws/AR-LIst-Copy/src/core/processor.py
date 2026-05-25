@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from openpyxl.formula.translate import Translator
 from openpyxl.utils import get_column_letter
 
 from core.constants import DATA_START_ROW, HEADER_ROW
@@ -48,6 +50,7 @@ class WorkbookProcessor:
         monthly_path: str | Path,
         master_path: str | Path,
         output_path: str | Path,
+        extract_date: str,
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> ProcessingResult:
         if not self.mapping.is_configured:
@@ -86,28 +89,33 @@ class WorkbookProcessor:
                 appended_count += 1
                 append_row += 1
 
-                # 新規追加したら index にも反映
                 appended_key = normalize_key(get_cell_value(target_ws, target_row, MASTER_KEY_COL))
                 if appended_key:
                     key_to_row[appended_key] = target_row
 
             if i % progress_step == 0 or i == total_rows:
-                percent = int((i / total_rows) * 90)
+                percent = int((i / total_rows) * 88)
                 self._report_progress(
                     progress_callback,
                     percent,
                     f"処理中… {i}/{total_rows}（更新 {updated_count} 件 / 追加 {appended_count} 件）",
                 )
 
-        self._report_progress(progress_callback, 93, "フィルタを更新しています…")
+        self._report_progress(progress_callback, 90, "I列の抽出日を更新しています…")
+        self._update_i_column_extract_date(target_ws, extract_date)
+
+        self._report_progress(progress_callback, 93, "並び替えをしています…")
+        self._sort_all_sheet(target_ws)
+
+        self._report_progress(progress_callback, 96, "フィルタを更新しています…")
         self._refresh_auto_filter(target_ws)
 
         self._enable_recalc_on_open(validated.master_workbook)
 
-        self._report_progress(progress_callback, 95, "数式参照を調整しています…")
+        self._report_progress(progress_callback, 97, "数式参照を調整しています…")
         self._sanitize_formula_references(validated.master_workbook)
 
-        self._report_progress(progress_callback, 97, "保存しています…")
+        self._report_progress(progress_callback, 98, "保存しています…")
         self._save_output_workbook(validated.master_workbook, output_path)
 
         self._report_progress(progress_callback, 100, "完了しました。")
@@ -213,6 +221,142 @@ class WorkbookProcessor:
             row=target_row,
             column=col_to_index(rule.target_col),
         ).value = source_value
+
+    @staticmethod
+    def _update_i_column_extract_date(target_ws, extract_date: str) -> None:
+        """
+        I列の数式内にある >=yyyy/m/d または >=yyyy/mm/dd の日付条件を、
+        画面入力の抽出日に置換する。
+        """
+        pattern = re.compile(r'">=\d{4}/\d{1,2}/\d{1,2}"')
+        replacement = f'">={extract_date}"'
+
+        last_row = find_last_data_row(target_ws, DATA_START_ROW)
+
+        for row in range(DATA_START_ROW, last_row + 1):
+            cell = target_ws.cell(row=row, column=col_to_index("I"))
+            value = cell.value
+
+            if not isinstance(value, str):
+                continue
+            if not value.startswith("="):
+                continue
+            if ">=" not in value:
+                continue
+
+            cell.value = pattern.sub(replacement, value)
+
+    @staticmethod
+    def _sort_all_sheet(target_ws) -> None:
+        """
+        ALLシートを以下の順で並び替える。
+        第一基準: BU列（対応方針コード）昇順
+        第二基準: G列（未収金額）降順
+
+        行の値・書式・数式をまとめて並び替える。
+        数式は移動先行に合わせて可能な範囲で翻訳する。
+        """
+        start_row = DATA_START_ROW
+        last_row = find_last_data_row(target_ws, DATA_START_ROW)
+        max_col = target_ws.max_column
+
+        if last_row <= start_row:
+            return
+
+        def parse_amount(value) -> float:
+            if value is None:
+                return 0.0
+
+            if isinstance(value, (int, float)):
+                return float(value)
+
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return 0.0
+
+                # 金額文字列（カンマ、円記号、全角カンマ）を並び替え用数値へ正規化
+                text = text.replace(",", "").replace("，", "").replace("円", "")
+                text = text.replace(" ", "")
+
+                if text.startswith("(") and text.endswith(")"):
+                    text = f"-{text[1:-1]}"
+
+                try:
+                    return float(text)
+                except ValueError:
+                    return 0.0
+
+            return 0.0
+
+        def sort_key(item):
+            row_num, _row_cells = item
+
+            bu_value = target_ws.cell(row=row_num, column=col_to_index("BU")).value
+            g_value = target_ws.cell(row=row_num, column=col_to_index("G")).value
+
+            try:
+                bu_key = int(bu_value)
+            except (TypeError, ValueError):
+                bu_key = 9999
+
+            g_key = parse_amount(g_value)
+
+            return (bu_key, -g_key)
+
+        rows_snapshot = []
+
+        for row in range(start_row, last_row + 1):
+            row_cells = []
+            for col in range(1, max_col + 1):
+                cell = target_ws.cell(row=row, column=col)
+                row_cells.append(
+                    {
+                        "value": cell.value,
+                        "style": copy(cell._style) if cell.has_style else None,
+                        "number_format": cell.number_format,
+                        "font": copy(cell.font),
+                        "fill": copy(cell.fill),
+                        "border": copy(cell.border),
+                        "alignment": copy(cell.alignment),
+                        "protection": copy(cell.protection),
+                        "origin": cell.coordinate,
+                    }
+                )
+            rows_snapshot.append((row, row_cells))
+
+        rows_snapshot.sort(key=sort_key)
+
+        for new_row, (old_row, row_cells) in enumerate(rows_snapshot, start=start_row):
+            source_height = target_ws.row_dimensions[old_row].height
+            if source_height is not None:
+                target_ws.row_dimensions[new_row].height = source_height
+
+            for col, cell_data in enumerate(row_cells, start=1):
+                target_cell = target_ws.cell(row=new_row, column=col)
+
+                value = cell_data["value"]
+
+                if isinstance(value, str) and value.startswith("="):
+                    try:
+                        value = Translator(
+                            value,
+                            origin=cell_data["origin"],
+                        ).translate_formula(target_cell.coordinate)
+                    except Exception:
+                        pass
+
+                target_cell.value = value
+
+                if cell_data["style"] is not None:
+                    target_cell._style = copy(cell_data["style"])
+
+                target_cell.number_format = cell_data["number_format"]
+                target_cell.font = copy(cell_data["font"])
+                target_cell.fill = copy(cell_data["fill"])
+                target_cell.border = copy(cell_data["border"])
+                target_cell.alignment = copy(cell_data["alignment"])
+                target_cell.protection = copy(cell_data["protection"])
 
     @staticmethod
     def _refresh_auto_filter(target_ws) -> None:
